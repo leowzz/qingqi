@@ -17,7 +17,8 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
     private static final int MUTED = Color.rgb(101, 113, 104), PAPER = Color.rgb(246, 247, 242);
     private BleProbe probe;
     private TextView status, scanStatus, filterStatus;
-    private Button scanButton, reportButton;
+    private Button scanButton, reportButton, cancelButton;
+    private String testNote = "";
     private AlertDialog scanDialog;
     private ArrayAdapter<BleProbe.Device> adapter;
     private String searchQuery = "";
@@ -58,11 +59,15 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
         status = text("靠近车辆，先检查蓝牙连接。", 14, MUTED, false);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         add(vehicle, status, 12);
-        reportButton = button("上次检查结果", Color.rgb(231, 235, 226), GREEN);
+        reportButton = button("检查记录", Color.rgb(231, 235, 226), GREEN);
         reportButton.setEnabled(!lastReport().isEmpty());
-        reportButton.setOnClickListener(v -> showReport(lastReport()));
+        reportButton.setOnClickListener(v -> showHistory());
         add(vehicle, reportButton, 12);
-        add(vehicle, text("检查结果自动保存在本机，可查看和复制。", 13, MUTED, false), 8);
+        cancelButton = button("停止检查并保存", Color.rgb(231, 235, 226), GREEN);
+        cancelButton.setVisibility(View.GONE);
+        cancelButton.setOnClickListener(v -> probe.cancel());
+        add(vehicle, cancelButton, 8);
+        add(vehicle, text("一次检查连接、设备信息和重连，最多 90 秒。最近 10 次结果保存在本机。", 13, MUTED, false), 8);
         add(content, vehicle, 28);
 
         add(content, text("常用功能", 20, INK, true), 28);
@@ -98,7 +103,7 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
         add(content, sensing, 12);
 
         add(content, text("适配预览", 15, GREEN, true), 24);
-        add(content, text("当前可搜索设备、检查蓝牙连接。电量、续航及控车功能尚未实现。请先用原版爱玛出行确认你的车辆支持手机蓝牙控车。", 14, MUTED, false), 6);
+        add(content, text("当前可检查连接、读取设备提供的标准信息并验证重连。车辆电量、续航及控车尚待适配，请先用原版爱玛出行确认蓝牙控车可用。", 14, MUTED, false), 6);
     }
 
     private void beginDiscovery() {
@@ -169,11 +174,19 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
         list.setOnItemClickListener((parent,view,position,id) -> {
             BleProbe.Device selected = (BleProbe.Device) parent.getItemAtPosition(position);
             if (selected == null) return;
-            new AlertDialog.Builder(this).setTitle("检查这台设备？")
+            EditText note = new EditText(this);
+            note.setHint("车型、固件或状态，例如：锁车后唤醒");
+            note.setText(getSharedPreferences("checks", MODE_PRIVATE).getString("test_note", ""));
+            note.setMaxLines(3);
+            note.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(160)});
+            LinearLayout noteBody = column();
+            noteBody.setPadding(dp(24), 0, dp(24), 0);
+            noteBody.addView(note);
+            new AlertDialog.Builder(this).setTitle("完整检查这台设备？").setView(noteBody)
                 .setMessage(selected.name() + "\nMAC 地址 " + selected.address()
-                    + "\n\n请确认它属于你的车辆。此次只检查连接信息，不会开锁、鸣笛或修改绑定。")
+                    + "\n\n请确认它属于你的车辆。将读取设备提供的标准信息并自动重连，最多 90 秒。请保持本页打开，不会发送开锁、鸣笛或启动指令。备注可留空。")
                 .setNegativeButton("取消", null)
-                .setPositiveButton("检查连接", (d,w) -> {
+                .setPositiveButton("开始完整检查", (d,w) -> {
                     if (!activityVisible) return;
                     // Dismiss callbacks are queued; detach before handing scanning over to a connection.
                     if (scanDialog != null) {
@@ -181,6 +194,8 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
                         scanDialog.dismiss();
                         scanDialog = null; adapter = null; scanStatus = null; filterStatus = null;
                     }
+                    testNote = note.getText().toString().trim();
+                    getSharedPreferences("checks", MODE_PRIVATE).edit().putString("test_note", testNote).apply();
                     probe.inspect(selected);
                 }).show();
         });
@@ -219,6 +234,7 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
         if (isFinishing() || isDestroyed()) return;
         status.setText(value);
         scanButton.setEnabled(!busy);
+        cancelButton.setVisibility(probe.isInspecting() ? View.VISIBLE : View.GONE);
         if (scanStatus != null) scanStatus.setText(value);
     }
 
@@ -226,11 +242,39 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
         return getSharedPreferences("checks", MODE_PRIVATE).getString("last_report", "");
     }
 
+    private org.json.JSONArray reportHistory() {
+        try { return new org.json.JSONArray(getSharedPreferences("checks", MODE_PRIVATE).getString("history", "[]")); }
+        catch (org.json.JSONException e) { return new org.json.JSONArray(); }
+    }
+
+    private void showHistory() {
+        org.json.JSONArray history = reportHistory();
+        if (history.length() == 0) { showReport(lastReport()); return; }
+        String[] labels = new String[history.length()];
+        for (int i = 0; i < labels.length; i++) {
+            String report = history.optString(i);
+            String time = Arrays.stream(report.split("\\n")).filter(line -> line.startsWith("时间：")).findFirst().orElse("检查记录");
+            String note = Arrays.stream(report.split("\\n")).filter(line -> line.startsWith("备注：")).findFirst().orElse("");
+            String result = Arrays.stream(report.split("\\n")).filter(line -> line.startsWith("结果：")).findFirst().orElse("");
+            labels[i] = time + "\n" + result + (note.isBlank() ? "" : "\n" + note);
+        }
+        new AlertDialog.Builder(this).setTitle("检查记录 · 最近 10 次")
+            .setItems(labels, (d, which) -> showReport(history.optString(which)))
+            .setNegativeButton("关闭", null).show();
+    }
+
     @Override public void result(String summary, String detail) {
-        String report = "轻骑 " + BuildConfig.VERSION_NAME + " 连接检查\n时间："
+        String report = "轻骑 " + BuildConfig.VERSION_NAME + " 完整检查\n时间："
             + java.time.OffsetDateTime.now() + "\n系统：Android " + android.os.Build.VERSION.RELEASE
+            + "\n手机：" + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
+            + (testNote.isBlank() ? "" : "\n备注：" + testNote.replace('\n', ' '))
             + "\n结果：" + summary + "\n\n" + detail;
-        getSharedPreferences("checks", MODE_PRIVATE).edit().putString("last_report", report).apply();
+        org.json.JSONArray history = reportHistory(), updated = new org.json.JSONArray();
+        updated.put(report);
+        if (history.length() == 0 && !lastReport().isEmpty()) updated.put(lastReport());
+        for (int i = 0; i < history.length() && updated.length() < 10; i++) updated.put(history.optString(i));
+        getSharedPreferences("checks", MODE_PRIVATE).edit().putString("last_report", report)
+            .putString("history", updated.toString()).apply();
         if (!activityVisible || isFinishing() || isDestroyed()) return;
         reportButton.setEnabled(true);
         new AlertDialog.Builder(this).setTitle(summary)
@@ -245,8 +289,13 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
         text.setPadding(dp(20), dp(12), dp(20), dp(12));
         text.setTextIsSelectable(true);
         ScrollView scroll = new ScrollView(this); scroll.addView(text);
-        new AlertDialog.Builder(this).setTitle("上次检查结果").setView(scroll)
+        new AlertDialog.Builder(this).setTitle("检查详情").setView(scroll)
             .setPositiveButton("复制结果", (d,w) -> copyReport(report))
+            .setNeutralButton("导出 / 分享", (d,w) -> {
+                Intent share = new Intent(Intent.ACTION_SEND).setType("text/plain");
+                share.putExtra(Intent.EXTRA_TEXT, report);
+                startActivity(Intent.createChooser(share, "分享检查报告"));
+            })
             .setNegativeButton("关闭", null).show();
     }
 
@@ -255,10 +304,13 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
         Toast.makeText(this, "已复制，可粘贴到聊天里", Toast.LENGTH_SHORT).show();
     }
 
-    @Override protected void onStart() { super.onStart(); activityVisible = true; }
+    @Override protected void onStart() {
+        super.onStart(); activityVisible = true;
+        reportButton.setEnabled(!lastReport().isEmpty());
+    }
     @Override protected void onStop() {
         activityVisible = false;
-        probe.close();
+        probe.cancel();
         if (scanDialog != null) scanDialog.dismiss();
         scanButton.setEnabled(true);
         status.setText("靠近车辆，先检查蓝牙连接。");
