@@ -37,6 +37,7 @@ public final class BleProbe {
     private int pass, signalSamples, readOk, readFailed, readPlanned;
     private boolean inspecting, firstDiscovered, secondDiscovered, incomplete;
     private String firstTopology;
+    private final Set<String> profileHints = new LinkedHashSet<>();
 
     public boolean isInspecting() { return inspecting; }
     private void log(String message) {
@@ -132,6 +133,7 @@ public final class BleProbe {
         phase = "开始检查";
         pass = 1; signalSamples = 0; readOk = 0; readFailed = 0; readPlanned = 0;
         firstDiscovered = false; secondDiscovered = false; incomplete = false; firstTopology = null;
+        profileHints.clear();
         log("设备：" + device.name() + "\n蓝牙地址：" + device.address() + "\n" + device.advertisement());
         int run = generation;
         timeout = () -> finish(run, "检查达到时间上限", "总时限 90 秒；停止于：" + phase);
@@ -229,9 +231,11 @@ public final class BleProbe {
                     }
                 }
             }
-            if (GattProfile.hasAimaHint(inService)) {
+            String hint = GattProfile.hint(service.getUuid(), inService);
+            if (hint != null) {
                 candidates++;
-                topology.append("  线索：同一服务内含 ADB1 指示 + ADB2 写入；尚未验证身份、协议或控车能力\n");
+                profileHints.add(hint);
+                topology.append("  线索：").append(hint).append('\n');
             }
         }
         log("第 " + pass + " 次服务发现成功：" + services + " 个服务 / " + characteristics + " 个特征 / " + candidates + " 组候选接口\n" + topology);
@@ -332,6 +336,9 @@ public final class BleProbe {
     private void finish(int run, String summary, String detail) {
         if (generation != run) return;
         String report = detail + "\n本次未发送控车指令，未验证车主认证。\n\n"
+            + "接口识别：" + (profileHints.isEmpty()
+                ? (firstDiscovered || secondDiscovered ? "未匹配已知线索，不能据此判断车辆不支持。" : "服务发现未完成，暂无法判断。")
+                : String.join("；", profileHints)) + "\n"
             + "首次服务发现：" + (firstDiscovered ? "成功" : "未完成")
             + "\n重连服务发现：" + (secondDiscovered ? "成功" : "未完成")
             + "\n标准读取：成功 " + readOk + " / 失败 " + readFailed + " / 计划 " + readPlanned + " / 未完成 " + (readPlanned - readOk - readFailed)

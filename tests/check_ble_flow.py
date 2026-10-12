@@ -37,7 +37,8 @@ STUBS = {
  public boolean readCharacteristic(BluetoothGattCharacteristic c){if(readInFlight||signalInFlight)throw new AssertionError("overlapping GATT operation");readCalls++;readInFlight=!rejectRead;return !rejectRead;}
  public boolean readRemoteRssi(){if(readInFlight||signalInFlight)throw new AssertionError("overlapping GATT operation");signalCalls++;signalInFlight=true;return true;}
  public void disconnect(){} public void close(){closed=true;}
- public void read(BluetoothGattCharacteristic c,int status){readInFlight=false;if(android.os.Build.VERSION.SDK_INT>=33)cb.onCharacteristicRead(this,c,new byte[]{50},status);else cb.onCharacteristicRead(this,c,status);android.os.Handler.advance(0);}
+ public void read(BluetoothGattCharacteristic c,int status){read(c,new byte[]{50},status);}
+ public void read(BluetoothGattCharacteristic c,byte[] value,int status){readInFlight=false;c.value=value;if(android.os.Build.VERSION.SDK_INT>=33)cb.onCharacteristicRead(this,c,value,status);else cb.onCharacteristicRead(this,c,status);android.os.Handler.advance(0);}
  public void signal(){signalInFlight=false;cb.onReadRemoteRssi(this,-65,0);android.os.Handler.advance(0);}
 }''',
 "android.bluetooth.BluetoothGattCallback": r'''public class BluetoothGattCallback {
@@ -57,7 +58,7 @@ STUBS = {
  public static final int PROPERTY_READ=2;private final BluetoothGattService service;private final java.util.UUID id;private final int flags;
  public BluetoothGattCharacteristic(BluetoothGattService s,String id,int flags){service=s;this.id=local.leo.qingqi.DiagnosticValues.uuid(id);this.flags=flags;s.chars.add(this);}
  public java.util.UUID getUuid(){return id;}public int getInstanceId(){return 0;}public int getProperties(){return flags;}
- public BluetoothGattService getService(){return service;}public byte[] getValue(){return new byte[]{50};}
+ public byte[] value=new byte[]{50};public BluetoothGattService getService(){return service;}public byte[] getValue(){return value;}
  public java.util.List<BluetoothGattDescriptor> getDescriptors(){return java.util.List.of();}
 }''',
 "android.bluetooth.BluetoothGattDescriptor": 'public class BluetoothGattDescriptor { public java.util.UUID getUuid(){return java.util.UUID.randomUUID();} }',
