@@ -1,0 +1,32 @@
+# Local tools and build outputs
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+__pycache__/
+*.pyc
+
+# Signing and local secrets
+*.jks
+*.keystore
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+keystore.properties
+signing.properties
+
+# Private analysis and device evidence
+protocol-findings.json
+analysis/
+evidence/
+captures/
+*.apk
+*.aab
+*.apks
+*.dex
+*.hprof
+*.log
