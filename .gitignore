@@ -1,6 +1,7 @@
 # Local tools and build outputs
 .gradle/
 **/build/
+dist/
 local.properties
 .idea/
 *.iml
@@ -18,6 +19,7 @@ __pycache__/
 !.env.example
 keystore.properties
 signing.properties
+.signing/
 
 # Private analysis and device evidence
 protocol-findings.json

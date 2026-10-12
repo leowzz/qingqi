@@ -85,7 +85,22 @@ adb -s YOUR_DEVICE_SERIAL install -r app/build/outputs/apk/debug/app-debug.apk
 
 当前使用 Gradle 9.1.0、Android Gradle Plugin 8.13.2、SDK 36 和 Build Tools 36.0.0。首次构建需要联网下载构建依赖，应用本身不联网。
 
-Debug APK 使用开发机器的调试签名，不是稳定发布包。不同机器构建的 APK 可能无法互相覆盖安装；卸载重装会删除本地检查结果。正式发布签名和自动发布流程尚未配置。
+GitHub Tag 构建使用固定实测签名，与最初的本机实测 APK 签名一致，可覆盖升级并保留检查记录。产物仍是支持 ADB 取数的 Debug 实测版，不是 Google Play 正式发布包。普通本地构建默认使用当前机器的调试签名；其他机器构建的 APK 可能无法覆盖安装，请使用 GitHub Release 的固定签名版本。
+
+## Tag 构建与发布
+
+更新 `app/build.gradle` 中的 `versionName` 和递增的 `versionCode`，并在 `CHANGELOG.md` 增加同名版本条目，提交并推送到 `main` 后创建 annotated tag：
+
+```sh
+git tag -a v0.1.5-field -m "Release 0.1.5-field"
+git push origin v0.1.5-field
+```
+
+每次发版使用新的版本和 Tag。普通 push / PR 运行构建与检查；`v*` Tag 触发独立的 `Tagged APK` 工作流，核对版本与 `main` 归属，运行回归测试、构建与 Lint，验证固定签名后发布 APK 和 `SHA256SUMS`。含 `-field` 等后缀的版本标为 GitHub 预发布，不设为 Latest。下载入口为 [GitHub Releases](https://github.com/leowzz/qingqi/releases)。
+
+构建密钥由仓库 Actions Secrets 提供：`QINGQI_KEYSTORE_BASE64`、`QINGQI_STORE_PASSWORD`、`QINGQI_KEY_ALIAS`、`QINGQI_KEY_PASSWORD`。缺少配置或证书与 `app/signing-certificate.sha256` 不符时构建失败，避免使用临时签名发布。证书 SHA-256 是公开校验值；私钥与密码不提交。
+
+维护者本机的密钥与密码备份保存在被忽略的 `.signing/`，应单独妥善备份；GitHub Secrets 无法取回明文。需要本地固定签名构建时，设置 `QINGQI_KEYSTORE` 为密钥绝对路径，并提供上述密码与别名环境变量。发布重跑保留已有 Release 正文，重新上传该 Tag 的 APK 和校验文件；构建失败时不会进入发布步骤。
 
 ## 参与开发
 

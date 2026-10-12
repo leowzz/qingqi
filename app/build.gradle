@@ -1,4 +1,9 @@
 plugins { id 'com.android.application' }
+def signingEnv = ['QINGQI_KEYSTORE', 'QINGQI_STORE_PASSWORD', 'QINGQI_KEY_ALIAS', 'QINGQI_KEY_PASSWORD']
+def fixedSigning = signingEnv.collectEntries { [(it): System.getenv(it)] }
+if (fixedSigning.values().any { it } && !fixedSigning.values().every { it }) {
+    throw new GradleException('Fixed signing requires all QINGQI signing environment variables')
+}
 android {
     namespace 'local.leo.qingqi'
     compileSdk 36
@@ -13,6 +18,19 @@ android {
     }
     buildFeatures { buildConfig true }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
-    buildTypes { release { minifyEnabled true; shrinkResources true; proguardFiles getDefaultProguardFile('proguard-android-optimize.txt') } }
+    signingConfigs {
+        if (fixedSigning.QINGQI_KEYSTORE) {
+            field {
+                storeFile file(fixedSigning.QINGQI_KEYSTORE)
+                storePassword fixedSigning.QINGQI_STORE_PASSWORD
+                keyAlias fixedSigning.QINGQI_KEY_ALIAS
+                keyPassword fixedSigning.QINGQI_KEY_PASSWORD
+            }
+        }
+    }
+    buildTypes {
+        debug { if (fixedSigning.QINGQI_KEYSTORE) signingConfig signingConfigs.field }
+        release { minifyEnabled true; shrinkResources true; proguardFiles getDefaultProguardFile('proguard-android-optimize.txt') }
+    }
     lint { abortOnError true }
 }

@@ -2,6 +2,7 @@ name: Android checks
 
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -32,4 +33,6 @@ jobs:
       - name: Build and lint
         run: ./gradlew --no-daemon --console=plain :app:assembleDebug :app:lintDebug
       - name: Check discovery contract and profile detection
-        run: python3 scripts/check_contract.py
+        run: |
+          python3 scripts/check_contract.py
+          python3 -m unittest discover -s tests -p 'test_release.py'

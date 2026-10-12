@@ -1,0 +1,97 @@
+name: Tagged APK
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag and main ancestry
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/release.py validate "$RELEASE_TAG"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Verify Gradle Wrapper
+        run: sha256sum --check gradle/wrapper/gradle-wrapper.jar.sha256
+      - name: Install required Android SDK packages
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"'
+      - name: Run regression checks
+        run: |
+          python3 scripts/check_contract.py
+          python3 -m unittest discover -s tests -p 'test_release.py'
+      - name: Restore fixed field signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.QINGQI_KEYSTORE_BASE64 }}
+        run: |
+          umask 077
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/qingqi-field.p12"
+      - name: Build and lint signed field APK
+        env:
+          QINGQI_KEYSTORE: ${{ runner.temp }}/qingqi-field.p12
+          QINGQI_STORE_PASSWORD: ${{ secrets.QINGQI_STORE_PASSWORD }}
+          QINGQI_KEY_ALIAS: ${{ secrets.QINGQI_KEY_ALIAS }}
+          QINGQI_KEY_PASSWORD: ${{ secrets.QINGQI_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon --console=plain :app:assembleDebug :app:lintDebug
+      - name: Verify signature and prepare release assets
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/release.py package "$RELEASE_TAG"
+      - name: Remove runner signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/qingqi-field.p12"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qingqi-${{ github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified build assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh run download "$RUN_ID" --name "qingqi-$RELEASE_TAG" --dir dist
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        working-directory: dist
+        run: |
+          sha256sum --check SHA256SUMS
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "轻骑 $RELEASE_TAG" --notes-file RELEASE_NOTES.md
+          fi
+          gh release upload "$RELEASE_TAG" qingqi-*.apk SHA256SUMS --clobber
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false
+          fi
