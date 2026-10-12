@@ -30,3 +30,9 @@ captures/
 *.dex
 *.hprof
 *.log
+
+# Private local test databases and exports
+*.db
+*.db-*
+*.sqlite
+qingqi-diagnostics-*.zip

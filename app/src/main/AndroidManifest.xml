@@ -3,7 +3,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
-    <application android:label="轻骑" android:icon="@drawable/ic_app" android:theme="@style/AppTheme" android:allowBackup="false" android:supportsRtl="true">
+    <application android:label="轻骑·实测版" android:icon="@drawable/ic_app" android:theme="@style/AppTheme" android:allowBackup="false" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

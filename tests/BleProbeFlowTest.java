@@ -6,9 +6,13 @@ import java.util.*;
 /** Exercises production callbacks and timers, not a second implementation of the flow. */
 public class BleProbeFlowTest {
     static class Results implements BleProbe.Listener {
-        int count; String detail = "", summary = "";
+        int count, eventCount; long lastElapsed; String detail = "", summary = "";
         public void devices(List<BleProbe.Device> d) {}
         public void message(String s, boolean busy) {}
+        public void evidence(long elapsed, String phase, String message) {
+            check(elapsed >= lastElapsed && !phase.isEmpty() && !message.isEmpty());
+            lastElapsed = elapsed; eventCount++;
+        }
         public void result(String s, String d) { count++; summary=s; detail=d; }
     }
     static void check(boolean value) { if (!value) throw new AssertionError(); }
@@ -35,7 +39,7 @@ public class BleProbeFlowTest {
             BluetoothGattCharacteristic c=battery(a); discover(a);
             check(a.readCalls==1 && a.signalCalls==0);
             a.read(c,0); a.signal(); a.signal(); check(a.closed);
-            finishSecond(); check(r.count==1 && !p.isInspecting());
+            finishSecond(); check(r.count==1 && !p.isInspecting() && r.eventCount>5);
             check(r.detail.contains("50%") && r.detail.contains("重连服务发现：成功"));
             check(r.detail.contains("advertisement evidence"));
             Handler.advance(100000); check(r.count==1);

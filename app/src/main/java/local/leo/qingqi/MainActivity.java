@@ -17,7 +17,11 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
     private static final int MUTED = Color.rgb(101, 113, 104), PAPER = Color.rgb(246, 247, 242);
     private BleProbe probe;
     private TextView status, scanStatus, filterStatus;
-    private Button scanButton, reportButton, cancelButton;
+    private Button scanButton, reportButton, cancelButton, exportButton;
+    private DiagnosticStore store;
+    private String sessionId;
+    private boolean storageReady, starting, exporting, recordingFailed;
+    private long recordCount;
     private String testNote = "";
     private AlertDialog scanDialog;
     private ArrayAdapter<BleProbe.Device> adapter;
@@ -28,6 +32,7 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         probe = new BleProbe(this, this);
+        store = DiagnosticStore.get(this);
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setBackgroundColor(PAPER);
@@ -40,8 +45,8 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
             return insets;
         });
         setContentView(scroll);
-        content.addView(text("轻骑", 30, INK, true));
-        add(content, text("简单连接，轻松出发。", 16, MUTED, false), 6);
+        content.addView(text("轻骑 · 实测版", 30, INK, true));
+        add(content, text("检查自动留档，测试后统一导出。", 16, MUTED, false), 6);
 
         LinearLayout vehicle = column();
         vehicle.setPadding(dp(22), dp(24), dp(22), dp(24));
@@ -60,14 +65,18 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         add(vehicle, status, 12);
         reportButton = button("检查记录", Color.rgb(231, 235, 226), GREEN);
-        reportButton.setEnabled(!lastReport().isEmpty());
-        reportButton.setOnClickListener(v -> showHistory());
+        reportButton.setEnabled(false);
+        reportButton.setOnClickListener(v -> showHistory(0));
         add(vehicle, reportButton, 12);
+        exportButton = button("导出全部记录", Color.rgb(231, 235, 226), GREEN);
+        exportButton.setEnabled(false);
+        exportButton.setOnClickListener(v -> beginExport());
+        add(vehicle, exportButton, 8);
         cancelButton = button("停止检查并保存", Color.rgb(231, 235, 226), GREEN);
         cancelButton.setVisibility(View.GONE);
         cancelButton.setOnClickListener(v -> probe.cancel());
         add(vehicle, cancelButton, 8);
-        add(vehicle, text("一次检查连接、设备信息和重连，最多 90 秒。最近 10 次结果保存在本机。", 13, MUTED, false), 8);
+        add(vehicle, text("每次检查与过程记录自动保存在本机，不会覆盖旧记录。测试后可导出一个文件，无需复制文本。", 13, MUTED, false), 8);
         add(content, vehicle, 28);
 
         add(content, text("常用功能", 20, INK, true), 28);
@@ -102,11 +111,13 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
         add(sensing, text("需确认车辆支持，并完成连接验证。", 14, MUTED, false), 4);
         add(content, sensing, 12);
 
-        add(content, text("适配预览", 15, GREEN, true), 24);
+        add(content, text("实车测试专用", 15, GREEN, true), 24);
         add(content, text("当前可检查连接、读取设备提供的标准信息并验证重连。车辆电量、续航及控车尚待适配，请先用原版爱玛出行确认蓝牙控车可用。", 14, MUTED, false), 6);
+        initializeStorage();
     }
 
     private void beginDiscovery() {
+        if (!storageReady) { initializeStorage(); return; }
         if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
             || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT}, 41);
@@ -176,7 +187,7 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
             if (selected == null) return;
             EditText note = new EditText(this);
             note.setHint("车型、固件或状态，例如：锁车后唤醒");
-            note.setText(getSharedPreferences("checks", MODE_PRIVATE).getString("test_note", ""));
+            note.setText(testNote);
             note.setMaxLines(3);
             note.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(160)});
             LinearLayout noteBody = column();
@@ -195,8 +206,7 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
                         scanDialog = null; adapter = null; scanStatus = null; filterStatus = null;
                     }
                     testNote = note.getText().toString().trim();
-                    getSharedPreferences("checks", MODE_PRIVATE).edit().putString("test_note", testNote).apply();
-                    probe.inspect(selected);
+                    startInspection(selected);
                 }).show();
         });
         scanDialog.setOnShowListener(d -> {
@@ -233,80 +243,206 @@ public final class MainActivity extends Activity implements BleProbe.Listener {
     @Override public void message(String value, boolean busy) {
         if (isFinishing() || isDestroyed()) return;
         status.setText(value);
-        scanButton.setEnabled(!busy);
+        scanButton.setEnabled(!busy && !starting);
+        exportButton.setEnabled(storageReady && recordCount > 0 && !busy && !starting && !exporting);
         cancelButton.setVisibility(probe.isInspecting() ? View.VISIBLE : View.GONE);
         if (scanStatus != null) scanStatus.setText(value);
     }
 
-    private String lastReport() {
-        return getSharedPreferences("checks", MODE_PRIVATE).getString("last_report", "");
+    private void initializeStorage() {
+        scanButton.setEnabled(false);
+        status.setText("正在准备本机记录…");
+        DiagnosticStore.IO.execute(() -> {
+            try {
+                store.initialize(getSharedPreferences("checks", MODE_PRIVATE));
+                long count = store.count();
+                List<DiagnosticStore.Entry> latest = store.list(0);
+                runOnUiThread(() -> {
+                    if (isDestroyed()) return;
+                    storageReady = true; recordCount = count;
+                    testNote = latest.isEmpty() ? getSharedPreferences("checks", MODE_PRIVATE).getString("test_note", "") : latest.get(0).note();
+                    scanButton.setText("查找我的车"); scanButton.setEnabled(true);
+                    reportButton.setEnabled(true); exportButton.setEnabled(count > 0);
+                    status.setText(count == 0 ? "靠近车辆，先检查蓝牙连接。" : "本机已保存 " + count + " 次检查，可继续测试或统一导出。");
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (isDestroyed()) return;
+                    scanButton.setText("重试准备记录"); scanButton.setEnabled(true);
+                    storageError("未能打开或迁移本机记录，旧数据未删除。请检查手机存储空间后重试。");
+                });
+            }
+        });
     }
 
-    private org.json.JSONArray reportHistory() {
-        try { return new org.json.JSONArray(getSharedPreferences("checks", MODE_PRIVATE).getString("history", "[]")); }
-        catch (org.json.JSONException e) { return new org.json.JSONArray(); }
+    private void startInspection(BleProbe.Device selected) {
+        starting = true; recordingFailed = false;
+        scanButton.setEnabled(false); exportButton.setEnabled(false);
+        status.setText("正在创建检查记录…");
+        String note = testNote;
+        DiagnosticStore.IO.execute(() -> {
+            try {
+                String id = store.begin(selected, note, BuildConfig.VERSION_NAME, android.os.Build.VERSION.RELEASE,
+                    android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL);
+                runOnUiThread(() -> {
+                    starting = false;
+                    if (!activityVisible || isDestroyed()) {
+                        DiagnosticStore.IO.execute(() -> {
+                            try { store.finish(id, "检查开始前已停止", "尚未发起蓝牙连接。"); }
+                            catch (Exception ignored) { /* Recovered as interrupted on the next process start. */ }
+                        });
+                        return;
+                    }
+                    sessionId = id; recordCount++;
+                    probe.inspect(selected);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    starting = false;
+                    if (!isDestroyed()) { scanButton.setEnabled(true); storageError("未能保存检查记录，本次未开始连接。请检查手机存储空间。"); }
+                });
+            }
+        });
     }
 
-    private void showHistory() {
-        org.json.JSONArray history = reportHistory();
-        if (history.length() == 0) { showReport(lastReport()); return; }
-        String[] labels = new String[history.length()];
-        for (int i = 0; i < labels.length; i++) {
-            String report = history.optString(i);
-            String time = Arrays.stream(report.split("\\n")).filter(line -> line.startsWith("时间：")).findFirst().orElse("检查记录");
-            String note = Arrays.stream(report.split("\\n")).filter(line -> line.startsWith("备注：")).findFirst().orElse("");
-            String result = Arrays.stream(report.split("\\n")).filter(line -> line.startsWith("结果：")).findFirst().orElse("");
-            labels[i] = time + "\n" + result + (note.isBlank() ? "" : "\n" + note);
-        }
-        new AlertDialog.Builder(this).setTitle("检查记录 · 最近 10 次")
-            .setItems(labels, (d, which) -> showReport(history.optString(which)))
-            .setNegativeButton("关闭", null).show();
+    @Override public void evidence(long elapsed, String phase, String message) {
+        String id = sessionId;
+        if (id == null) return;
+        DiagnosticStore.IO.execute(() -> {
+            try { store.append(id, elapsed, phase, message); }
+            catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (!id.equals(sessionId) || recordingFailed) return;
+                    recordingFailed = true;
+                    probe.cancel();
+                    storageError("过程记录写入失败，已停止检查。正在尝试保存完整报告，请检查手机存储空间。");
+                });
+            }
+        });
+    }
+
+    private static String displayTime(String value) {
+        try { return java.time.Instant.parse(value).atZone(java.time.ZoneId.systemDefault())
+            .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm:ss")); }
+        catch (java.time.format.DateTimeParseException e) { return value; }
+    }
+    private void showHistory(int offset) {
+        DiagnosticStore.IO.execute(() -> {
+            try {
+                List<DiagnosticStore.Entry> entries = store.list(offset);
+                long count = store.count();
+                runOnUiThread(() -> {
+                    if (!activityVisible || isDestroyed()) return;
+                    if (entries.isEmpty()) { Toast.makeText(this, "还没有检查记录", Toast.LENGTH_SHORT).show(); return; }
+                    String[] labels = new String[entries.size()];
+                    for (int i = 0; i < labels.length; i++) {
+                        var row = entries.get(i);
+                        labels[i] = displayTime(row.started()) + " · " + row.deviceName() + "\n" + row.summary()
+                            + (row.note().isBlank() ? "" : "\n" + row.note());
+                    }
+                    AlertDialog.Builder dialog = new AlertDialog.Builder(this)
+                        .setTitle("检查记录 · 共 " + count + " 次 · 第 " + (offset / 50 + 1) + " 页")
+                        .setItems(labels, (d, which) -> loadReport(entries.get(which).id()))
+                        .setNegativeButton("关闭", null);
+                    if (offset > 0) dialog.setNeutralButton("上一页", (d,w) -> showHistory(Math.max(0, offset - 50)));
+                    if (offset + entries.size() < count) dialog.setPositiveButton("下一页", (d,w) -> showHistory(offset + 50));
+                    dialog.show();
+                });
+            } catch (Exception e) { runOnUiThread(() -> storageError("检查记录读取失败，请稍后重试。")); }
+        });
+    }
+    private void loadReport(String id) {
+        DiagnosticStore.IO.execute(() -> {
+            try {
+                String report = store.report(id);
+                runOnUiThread(() -> { if (activityVisible && !isDestroyed()) showReport(report); });
+            } catch (Exception e) { runOnUiThread(() -> storageError("这份记录读取失败，请稍后重试。")); }
+        });
     }
 
     @Override public void result(String summary, String detail) {
-        String report = "轻骑 " + BuildConfig.VERSION_NAME + " 完整检查\n时间："
+        String id = sessionId; sessionId = null;
+        String report = "轻骑实测版 " + BuildConfig.VERSION_NAME + " 完整检查\n时间："
             + java.time.OffsetDateTime.now() + "\n系统：Android " + android.os.Build.VERSION.RELEASE
             + "\n手机：" + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
             + (testNote.isBlank() ? "" : "\n备注：" + testNote.replace('\n', ' '))
             + "\n结果：" + summary + "\n\n" + detail;
-        org.json.JSONArray history = reportHistory(), updated = new org.json.JSONArray();
-        updated.put(report);
-        if (history.length() == 0 && !lastReport().isEmpty()) updated.put(lastReport());
-        for (int i = 0; i < history.length() && updated.length() < 10; i++) updated.put(history.optString(i));
-        getSharedPreferences("checks", MODE_PRIVATE).edit().putString("last_report", report)
-            .putString("history", updated.toString()).apply();
-        if (!activityVisible || isFinishing() || isDestroyed()) return;
-        reportButton.setEnabled(true);
-        new AlertDialog.Builder(this).setTitle(summary)
-            .setMessage(detail.split("\n\n", 2)[0] + "\n\n结果已保存，可在首页再次查看。")
-            .setPositiveButton("复制结果", (d,w) -> copyReport(report))
-            .setNegativeButton("关闭", null)
-            .setNeutralButton("查看详情", (d,w) -> showReport(report)).show();
+        DiagnosticStore.IO.execute(() -> {
+            try {
+                store.finish(id, summary, report);
+                runOnUiThread(() -> {
+                    if (!activityVisible || isDestroyed()) return;
+                    reportButton.setEnabled(true); exportButton.setEnabled(!probe.isInspecting() && !starting && !exporting);
+                    new AlertDialog.Builder(this).setTitle(summary)
+                        .setMessage("本次结果已自动保存。你可以继续测试，完成后统一导出全部记录。")
+                        .setPositiveButton("查看详情", (d,w) -> showReport(report))
+                        .setNegativeButton("继续测试", null).show();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    storageError("完整报告保存失败，已落盘的过程记录仍保留。请检查手机存储空间。" );
+                    if (activityVisible && !isDestroyed()) showReport("本份完整报告尚未保存。\n\n" + report);
+                });
+            }
+        });
     }
 
     private void showReport(String report) {
         TextView text = text(report, 14, INK, false);
-        text.setPadding(dp(20), dp(12), dp(20), dp(12));
-        text.setTextIsSelectable(true);
+        text.setPadding(dp(20), dp(12), dp(20), dp(12)); text.setTextIsSelectable(true);
         ScrollView scroll = new ScrollView(this); scroll.addView(text);
         new AlertDialog.Builder(this).setTitle("检查详情").setView(scroll)
-            .setPositiveButton("复制结果", (d,w) -> copyReport(report))
-            .setNeutralButton("导出 / 分享", (d,w) -> {
-                Intent share = new Intent(Intent.ACTION_SEND).setType("text/plain");
-                share.putExtra(Intent.EXTRA_TEXT, report);
-                startActivity(Intent.createChooser(share, "分享检查报告"));
-            })
+            .setPositiveButton("导出全部记录", (d,w) -> beginExport())
             .setNegativeButton("关闭", null).show();
     }
-
-    private void copyReport(String report) {
-        getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("轻骑连接检查", report));
-        Toast.makeText(this, "已复制，可粘贴到聊天里", Toast.LENGTH_SHORT).show();
+    private void beginExport() {
+        if (probe.isInspecting() || starting) {
+            Toast.makeText(this, "请先完成或停止当前检查", Toast.LENGTH_SHORT).show(); return;
+        }
+        if (exporting) return;
+        Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/zip");
+        save.putExtra(Intent.EXTRA_TITLE, "qingqi-diagnostics-" + java.time.LocalDateTime.now()
+            .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + ".zip");
+        try { startActivityForResult(save, 42); }
+        catch (ActivityNotFoundException e) { storageError("手机没有可用的文件保存程序，可连接电脑读取本机记录。"); }
+    }
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != 42 || result != RESULT_OK || data == null || data.getData() == null) return;
+        android.net.Uri uri = data.getData();
+        exporting = true; exportButton.setEnabled(false);
+        status.setText("正在导出全部记录…");
+        DiagnosticStore.IO.execute(() -> {
+            try {
+                java.io.OutputStream output = getContentResolver().openOutputStream(uri, "wt");
+                if (output == null) throw new java.io.IOException("Destination unavailable");
+                try (output) { store.exportZip(output); }
+                runOnUiThread(() -> {
+                    exporting = false;
+                    if (!isDestroyed()) {
+                        exportButton.setEnabled(!probe.isInspecting() && !starting);
+                        status.setText("全部记录已导出。将这个 ZIP 文件发回即可，无需复制文本。");
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    exporting = false;
+                    if (!isDestroyed()) exportButton.setEnabled(!probe.isInspecting() && !starting);
+                    storageError("导出未完成，目标文件可能不完整。本机记录未删除，请重新导出。");
+                });
+            }
+        });
+    }
+    private void storageError(String message) {
+        if (isDestroyed()) return;
+        status.setText(message);
+        if (activityVisible) new AlertDialog.Builder(this).setTitle("记录保存与读取")
+            .setMessage(message).setPositiveButton("知道了", null).show();
     }
 
     @Override protected void onStart() {
         super.onStart(); activityVisible = true;
-        reportButton.setEnabled(!lastReport().isEmpty());
+        reportButton.setEnabled(storageReady);
     }
     @Override protected void onStop() {
         activityVisible = false;

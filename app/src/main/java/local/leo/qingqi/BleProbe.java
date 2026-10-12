@@ -16,6 +16,7 @@ public final class BleProbe {
         void devices(List<Device> devices);
         void message(String message, boolean busy);
         void result(String summary, String detail);
+        default void evidence(long elapsedMillis, String phase, String message) {}
     }
     private final Context context;
     private final Listener listener;
@@ -39,6 +40,7 @@ public final class BleProbe {
 
     public boolean isInspecting() { return inspecting; }
     private void log(String message) {
+        listener.evidence(android.os.SystemClock.elapsedRealtime() - started, phase, message);
         evidence.append('[').append((android.os.SystemClock.elapsedRealtime() - started) / 1000)
             .append("s] ").append(message).append('\n');
     }
@@ -127,11 +129,12 @@ public final class BleProbe {
         inspecting = true;
         started = android.os.SystemClock.elapsedRealtime();
         evidence.setLength(0);
+        phase = "开始检查";
         pass = 1; signalSamples = 0; readOk = 0; readFailed = 0; readPlanned = 0;
         firstDiscovered = false; secondDiscovered = false; incomplete = false; firstTopology = null;
         log("设备：" + device.name() + "\n蓝牙地址：" + device.address() + "\n" + device.advertisement());
         int run = generation;
-        timeout = () -> finish(run, "检查达到时间上限，已保存部分结果", "总时限 90 秒；停止于：" + phase);
+        timeout = () -> finish(run, "检查达到时间上限", "总时限 90 秒；停止于：" + phase);
         main.postDelayed(timeout, 90000);
         connect(run);
     }
@@ -143,7 +146,7 @@ public final class BleProbe {
             BluetoothManager manager = context.getSystemService(BluetoothManager.class);
             BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
             if (adapter == null || !adapter.isEnabled()) {
-                finish(run, "蓝牙未开启，已保存检查结果", "请打开手机蓝牙后重试。"); return;
+                finish(run, "蓝牙未开启", "请打开手机蓝牙后重试。"); return;
             }
             BluetoothDevice remote = adapter.getRemoteDevice(inspectedDevice.address());
             log("第 " + pass + " 次连接；系统绑定状态：" + remote.getBondState() + "（10 未绑定 / 11 绑定中 / 12 已绑定）");
@@ -302,11 +305,12 @@ public final class BleProbe {
         incomplete = true;
         log(reason + "；阶段：" + phase);
         if (pass == 1) reconnect(run);
-        else finish(run, "检查部分完成", "第二次连接检查未完成，已保留全部已有结果。请查看详情中的失败阶段。");
+        else finish(run, "检查部分完成", "第二次连接检查未完成。请查看详情中的失败阶段。");
     }
 
     private void stage(int run, String text, long milliseconds) {
         clearStep(); phase = text;
+        log(text);
         listener.message(text, true);
         stepTimeout = () -> {
             if (generation != run) return;
@@ -321,7 +325,7 @@ public final class BleProbe {
     }
 
     public void cancel() {
-        if (inspecting) finish(generation, "检查已停止，已保存部分结果", "停止于：" + phase);
+        if (inspecting) finish(generation, "检查已停止", "停止于：" + phase);
         else close();
     }
 
